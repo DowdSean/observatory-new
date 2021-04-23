@@ -9,7 +9,7 @@ use rocket::response::Redirect;
 use crate::guards::*;
 use crate::models::NewRelationGroupUser;
 use crate::models::{NewUser, User};
-use crate::templates::FormError;
+use crate::templates::{is_reserved, FormError};
 use crate::ObservDbConn;
 
 use super::crypto::*;
@@ -46,9 +46,9 @@ impl From<SignUpForm> for NewUser {
         newuser.handle = f.handle;
         newuser.mmost = f.mmost;
 
-        let newsalt = gen_salt();
-        newuser.salt = newsalt.clone();
-        newuser.password_hash = hash_password(f.password, &newsalt);
+        let (pass, salt) = hash_password(f.password);
+        newuser.salt = salt;
+        newuser.password_hash = pass;
 
         newuser.tier = 0;
         newuser.active = true;
@@ -56,7 +56,7 @@ impl From<SignUpForm> for NewUser {
         newuser.former = false;
         newuser.extrn = false;
 
-        return newuser;
+        newuser
     }
 }
 
@@ -68,7 +68,9 @@ impl From<SignUpForm> for NewUser {
 /// If all goes well then it redirects to `/` otherwise back to the same page.
 #[post("/signup", data = "<form>")]
 pub fn signup_post(conn: ObservDbConn, mut cookies: Cookies, form: Form<SignUpForm>) -> Redirect {
-    let form = form.into_inner();
+    let mut form = form.into_inner();
+    form.handle.truncate(39);
+    form.mmost.truncate(22);
     // Make sure the password is properly repeated
     if form.password != form.password_repeat {
         return Redirect::to(format!("/signup?e={}", FormError::PasswordMismatch));
@@ -77,6 +79,10 @@ pub fn signup_post(conn: ObservDbConn, mut cookies: Cookies, form: Form<SignUpFo
     let newuser = NewUser::from(form);
 
     use crate::schema::users::dsl::*;
+
+    if let Err(e) = is_reserved(&*newuser.handle) {
+        return Redirect::to(format!("/signup?e={}", e));
+    }
 
     // Check if user's email is already signed up
     if users
@@ -134,6 +140,12 @@ pub fn signup_post(conn: ObservDbConn, mut cookies: Cookies, form: Form<SignUpFo
 
     cookies.add_private(Cookie::new("user_id", format!("{}", user.id)));
 
+    audit_log!(
+        "User {} [{}] has registered for an account",
+        user.id,
+        user.email
+    );
+
     Redirect::to(format!("/users/{}", user.id))
 }
 
@@ -170,7 +182,7 @@ pub fn login_post(
 
     let creds = creds.into_inner();
 
-    let to = to.unwrap_or(String::from("/"));
+    let to = to.unwrap_or_else(|| String::from("/"));
 
     // If we find the user
     if let Some(user) = users
@@ -180,7 +192,7 @@ pub fn login_post(
         .expect("Failed to get user from database")
     {
         // Verify the password
-        if verify_password(creds.password, user.password_hash, &user.salt) {
+        if verify_password(creds.password, user.password_hash, user.salt) {
             cookies.add_private(Cookie::new("user_id", format!("{}", user.id)));
             Redirect::to(to)
         } else {

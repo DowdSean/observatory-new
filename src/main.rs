@@ -32,6 +32,21 @@ extern crate rust_embed;
 extern crate serde_derive;
 #[macro_use]
 extern crate diesel_migrations;
+extern crate flexi_logger;
+extern crate log;
+#[macro_use]
+extern crate diesel_derive_newtype;
+
+#[macro_use]
+mod macros {
+    /// A simple macro for logging audit messages
+    #[macro_export]
+    macro_rules! audit_log {
+        ($($arg:tt)*) => (
+            $crate::info!(target: "{Audit}", "{}", format_args!($($arg)*));
+        )
+    }
+}
 
 // Module files
 mod fairings;
@@ -51,12 +66,32 @@ mod news;
 mod projects;
 mod users;
 
+use flexi_logger::{opt_format, writers::FileLogWriter, Logger};
+use log::*;
+
+pub(crate) const LOG_DIR: &str = "logs";
+
 /// The database connection
 ///
 /// This struct is the wrapper for the database connection which
 /// is mounted as a fairing and can be accessed as a request guard.
 #[database("sqlite_observ")]
 pub struct ObservDbConn(diesel::SqliteConnection);
+
+fn audit_writer() -> Box<FileLogWriter> {
+    Box::new(
+        FileLogWriter::builder()
+            .discriminant("audit")
+            .suffix("log")
+            .format(opt_format)
+            .suppress_timestamp()
+            .directory(LOG_DIR)
+            .append()
+            .print_message()
+            .try_build()
+            .unwrap(),
+    )
+}
 
 pub fn rocket(test_config: Option<rocket::Config>) -> rocket::Rocket {
     // Load all the handlers
@@ -65,8 +100,8 @@ pub fn rocket(test_config: Option<rocket::Config>) -> rocket::Rocket {
     // Load the fairings
     use fairings::{AdminCheck, ConfigWrite, DatabaseCreate};
 
-    let app = if test_config.is_some() {
-        rocket::custom(test_config.unwrap())
+    let app = if let Some(test_config) = test_config {
+        rocket::custom(test_config)
     } else {
         rocket::ignite()
     };
@@ -83,15 +118,18 @@ pub fn rocket(test_config: Option<rocket::Config>) -> rocket::Rocket {
         .mount(
             "/",
             routes![
+                // Misc
                 index,
                 big,
                 staticfile,
                 favicon,
                 dashboard,
                 sitemap,
+                log_viewer,
                 // Calendar
                 calendar,
                 calendar_json,
+                calendar_ics,
                 event,
                 event_edit,
                 event_edit_put,
@@ -143,6 +181,7 @@ pub fn rocket(test_config: Option<rocket::Config>) -> rocket::Rocket {
                 group_user_delete,
                 group_delete,
                 meetings,
+                meeting_get,
                 meetings_json,
                 meeting_new_post,
                 group_edit,
@@ -168,6 +207,21 @@ pub fn rocket(test_config: Option<rocket::Config>) -> rocket::Rocket {
 /// Here it loads Rocket, sets it up with the fairings and handlers,
 /// then launches the server.
 fn main() {
+    Logger::with_env_or_str("info")
+        .print_message()
+        .log_to_file()
+        .directory(LOG_DIR)
+        .add_writer("Audit", audit_writer())
+        .duplicate_to_stderr(if cfg!(debug_assertions) {
+            flexi_logger::Duplicate::All
+        } else {
+            flexi_logger::Duplicate::Warn
+        })
+        .start()
+        .unwrap_or_else(|e| panic!("Logger initialization failed with {}", e));
+
+    audit_log!("Audit Logger Initialized!");
+
     // Liftoff! Starts the webserver
     rocket(None).launch();
 }

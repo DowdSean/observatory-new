@@ -1,4 +1,5 @@
-//!
+//! The handler for the user page this code handles the function of searching for users, creating users, deleting users
+//! Checking users relation to a project, number of commits made, return a list of users, and the user's grade summary
 
 use diesel::prelude::*;
 use diesel::{delete, update};
@@ -14,6 +15,10 @@ use crate::ObservDbConn;
 
 use super::models::*;
 use super::templates::*;
+use crate::templates::{is_reserved, FormError};
+
+/// GET handler for '/users/<h>'
+/// Gets an Indivual user by their ID and returns it to the template
 
 #[get("/users/<h>")]
 pub fn user(conn: ObservDbConn, l: MaybeLoggedIn, h: i32) -> Option<UserTemplate> {
@@ -34,6 +39,9 @@ pub fn user(conn: ObservDbConn, l: MaybeLoggedIn, h: i32) -> Option<UserTemplate
     })
 }
 
+/// GET handler for '/users/<h>'
+/// Gets an indivual user by there Github handle and redirects them to their user ID
+
 #[get("/users/<h>", rank = 2)]
 pub fn user_by_handle(conn: ObservDbConn, _l: MaybeLoggedIn, h: String) -> Option<Redirect> {
     use crate::schema::users::dsl::*;
@@ -47,8 +55,16 @@ pub fn user_by_handle(conn: ObservDbConn, _l: MaybeLoggedIn, h: String) -> Optio
     Some(Redirect::to(format!("/users/{}", u.id)))
 }
 
-#[get("/users/<h>/edit")]
-pub fn user_edit(conn: ObservDbConn, l: UserGuard, h: i32) -> Option<EditUserTemplate> {
+/// GET handler for '/users/<h>/edit'
+/// gets the user template page for editing
+
+#[get("/users/<h>/edit?<e>")]
+pub fn user_edit(
+    conn: ObservDbConn,
+    l: UserGuard,
+    h: i32,
+    e: Option<FormError>,
+) -> Option<EditUserTemplate> {
     use crate::schema::users::dsl::*;
 
     Some(EditUserTemplate {
@@ -58,8 +74,12 @@ pub fn user_edit(conn: ObservDbConn, l: UserGuard, h: i32) -> Option<EditUserTem
             .first(&*conn)
             .optional()
             .expect("Failed to get user from database")?,
+        error: e,
     })
 }
+
+/// PUT handler for '/users/<h>'
+/// Puts up the new changes made in the user edit and changes the users data
 
 #[put("/users/<h>", data = "<edituser>")]
 pub fn user_edit_put(
@@ -80,18 +100,68 @@ pub fn user_edit_put(
         .expect("Failed to get user from database");
 
     if l.tier > 1 || l.id == h {
+        if let Err(e) = is_reserved(&*edituser.handle) {
+            return Ok(Redirect::to(format!("/users/{}/edit?e={}", h, e)));
+        }
+
+        // Check if user's email is already signed up
+        if users
+            .filter(&email.eq(&edituser.email).and(id.ne(h)))
+            .first::<User>(&*conn)
+            .optional()
+            .expect("Failed to get user from database")
+            .is_some()
+        {
+            return Ok(Redirect::to(format!(
+                "/users/{}/edit?e={}",
+                h,
+                FormError::EmailExists
+            )));
+        }
+
+        // Check if user's github is already signed up
+        if users
+            .filter(&handle.eq(&edituser.handle).and(id.ne(h)))
+            .first::<User>(&*conn)
+            .optional()
+            .expect("Failed to get user from database")
+            .is_some()
+        {
+            return Ok(Redirect::to(format!(
+                "/users/{}/edit?e={}",
+                h,
+                FormError::GitExists
+            )));
+        }
+
+        // Check if user's mattermost is already signed up
+        if users
+            .filter(&mmost.eq(&edituser.mmost).and(id.ne(h)))
+            .first::<User>(&*conn)
+            .optional()
+            .expect("Failed to get user from database")
+            .is_some()
+        {
+            return Ok(Redirect::to(format!(
+                "/users/{}/edit?e={}",
+                h,
+                FormError::MmostExists
+            )));
+        }
+
         if edituser.password_hash.is_empty() {
             edituser.salt = esalt;
             edituser.password_hash = phash;
         } else {
-            edituser.salt = gen_salt();
-            edituser.password_hash = hash_password(edituser.password_hash, &edituser.salt);
+            let (phash, psalt) = hash_password(edituser.password_hash);
+            edituser.password_hash = phash;
+            edituser.salt = psalt;
         }
 
         // if the logged in user can't change tiers
         // of if it's the admin user
         // don't change tiers
-        if !(l.tier > 1) || h == 0 {
+        if l.tier <= 1 || h == 0 {
             edituser.tier = etier;
         }
 
@@ -106,45 +176,97 @@ pub fn user_edit_put(
     }
 }
 
+/// DELETE handler for '/users/<h>'
+/// delets all user data from the database
+
 #[delete("/users/<h>")]
 pub fn user_delete(conn: ObservDbConn, _l: AdminGuard, h: i32) -> Redirect {
+    // Delete the user
     use crate::schema::users::dsl::*;
     delete(users.find(h))
         .execute(&*conn)
         .expect("Failed to delete user from database");
+
+    // Delete the relations to projects
+    {
+        use crate::schema::relation_project_user::dsl::*;
+        delete(relation_project_user.filter(user_id.eq(h)))
+            .execute(&*conn)
+            .expect("Failed to delete relation from database");
+    }
+
+    // Delete the relations to groups
+    {
+        use crate::schema::relation_group_user::dsl::*;
+        delete(relation_group_user.filter(user_id.eq(h)))
+            .execute(&*conn)
+            .expect("Failed to delete relation from database");
+    }
+
     Redirect::to("/users")
 }
 
-#[get("/users?<s>")]
-pub fn users(conn: ObservDbConn, l: MaybeLoggedIn, s: Option<String>) -> UsersListTemplate {
+/// GET handler for '/users?<s>'
+/// Return a list of users form a search string
+
+#[get("/users?<s>&<a>")]
+pub fn users(
+    conn: ObservDbConn,
+    l: MaybeLoggedIn,
+    s: Option<String>,
+    a: Option<bool>,
+) -> UsersListTemplate {
     UsersListTemplate {
         logged_in: l.user(),
-        users: filter_users(&*conn, s),
+        search_term: s.clone().unwrap_or_else(String::new),
+        users: filter_users(&*conn, s, a),
+        inactive: a.unwrap_or(false),
     }
 }
 
-#[get("/users.json?<s>")]
-pub fn users_json(conn: ObservDbConn, s: Option<String>) -> Json<Vec<User>> {
-    Json(filter_users(&*conn, s))
+/// GET handler for 'users.json?<s>'
+/// Returns the JSON object for a user with an optional search string
+
+#[get("/users.json?<s>&<a>")]
+pub fn users_json(conn: ObservDbConn, s: Option<String>, a: Option<bool>) -> Json<Vec<User>> {
+    Json(filter_users(&*conn, s, a))
 }
 
-pub fn filter_users(conn: &SqliteConnection, term: Option<String>) -> Vec<User> {
+pub fn filter_users(
+    conn: &SqliteConnection,
+    term: Option<String>,
+    inact: Option<bool>,
+) -> Vec<User> {
     use crate::schema::users::dsl::*;
+
+    let default_filter = id.ne(0);
+    let afilter = active.eq(true).and(former.eq(false));
 
     if let Some(term) = term {
         let sterm = format!("%{}%", term);
         let email_term = format!("%{}@", term);
-        let filter = real_name
+
+        let sfilter = real_name
             .like(&sterm)
             .or(email.like(&email_term))
             .or(handle.like(&sterm));
-        users.filter(filter).load(conn)
+
+        match inact {
+            Some(true) => users.filter(default_filter.and(sfilter)).load(conn),
+            Some(false) | None => users
+                .filter(default_filter.and(sfilter).and(afilter))
+                .load(conn),
+        }
     } else {
-        users.load(conn)
+        match inact {
+            Some(true) => users.filter(default_filter).load(conn),
+            Some(false) | None => users.filter(default_filter.and(afilter)).load(conn),
+        }
     }
     .expect("Failed to get users")
 }
 
+/// finds the project that the user is related to
 use crate::models::{Project, RelationProjectUser};
 pub fn user_projects(conn: &SqliteConnection, user: &User) -> Vec<Project> {
     RelationProjectUser::belonging_to(user)
@@ -161,6 +283,7 @@ pub fn user_projects(conn: &SqliteConnection, user: &User) -> Vec<Project> {
         .collect()
 }
 
+/// finds a group the user is a part of
 use crate::models::{Group, RelationGroupUser};
 pub fn user_groups(conn: &SqliteConnection, user: &User) -> Vec<Group> {
     RelationGroupUser::belonging_to(user)
@@ -176,6 +299,8 @@ pub fn user_groups(conn: &SqliteConnection, user: &User) -> Vec<Group> {
         })
         .collect()
 }
+
+///Calculates a users grade bassed on attendence and total commits
 
 pub fn grade_summary(conn: &SqliteConnection, user: &User) -> GradeSummary {
     use crate::models::Attendable;
@@ -224,6 +349,7 @@ pub fn grade_summary(conn: &SqliteConnection, user: &User) -> GradeSummary {
     }
 }
 
+/// Counts the number of total commits user has made
 use crate::handlers::project_commits;
 pub fn user_commits_count(conn: &SqliteConnection, user: &User) -> Option<usize> {
     Some(

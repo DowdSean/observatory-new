@@ -97,8 +97,7 @@ impl Fairing for AdminCheck {
                 pass
             );
 
-            let psalt = gen_salt();
-            let phash = hash_password(pass, &psalt);
+            let (phash, psalt) = hash_password(pass);
 
             // Needs to be a NewUser for set() so create it
             let nu = NewUser {
@@ -228,7 +227,7 @@ fn gen_secret() -> String {
 }
 
 /// Writes the config to a file in the same folder as the binary
-fn write_config(conf: &rocket::Config, secret: &String) -> std::io::Result<()> {
+fn write_config(conf: &rocket::Config, secret: &str) -> std::io::Result<()> {
     use std::fs::File;
     use std::io::Write;
 

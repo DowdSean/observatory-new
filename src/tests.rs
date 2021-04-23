@@ -1,6 +1,7 @@
 use super::*;
 use crate::auth::crypto::*;
 use crate::models::*;
+use diesel::delete;
 use diesel::insert_into;
 use diesel::prelude::*;
 use rocket::config::{Config, Environment, LoggingLevel, Value};
@@ -29,7 +30,7 @@ embed_migrations!("migrations/sqlite");
 // Static connection variable
 
 fn create_connection_url(client: &rocket::local::Client) -> String {
-    return String::from(
+    String::from(
         client
             .rocket()
             .config()
@@ -41,7 +42,7 @@ fn create_connection_url(client: &rocket::local::Client) -> String {
             .unwrap()
             .as_str()
             .unwrap(),
-    );
+    )
 }
 
 fn setup(test_name: String) -> Option<rocket::Config> {
@@ -52,9 +53,7 @@ fn setup(test_name: String) -> Option<rocket::Config> {
     let db_path_exists = Path::new(db_path.as_str()).is_dir();
 
     if !db_path_exists {
-        fs::create_dir(db_path.as_str())
-            .ok()
-            .expect("Dir Creation Error");
+        fs::create_dir(db_path.as_str()).expect("Dir Creation Error");
     }
 
     let mut db_file_path = String::from(db_path.as_str());
@@ -64,9 +63,7 @@ fn setup(test_name: String) -> Option<rocket::Config> {
     let db_file_exists = Path::new(db_file_path.as_str()).is_file();
 
     if !db_file_exists {
-        fs::File::create(db_file_path.as_str())
-            .ok()
-            .expect("File Creation Error");
+        fs::File::create(db_file_path.as_str()).expect("File Creation Error");
     }
 
     let mut database_config = HashMap::new();
@@ -95,13 +92,9 @@ fn cleanup(test_name: String) {
     db_file_string.push_str(test_name.as_str());
     db_file_string.push_str(".sqlite");
 
-    fs::remove_file(db_file_string)
-        .ok()
-        .expect("File Deletion Error");
+    fs::remove_file(db_file_string).expect("File Deletion Error");
 
-    fs::remove_dir(db_path_string)
-        .ok()
-        .expect("Dir Deletion Error");
+    fs::remove_dir(db_path_string).expect("Dir Deletion Error");
 }
 
 #[test]
@@ -143,6 +136,7 @@ fn check_static_content() {
     cleanup(String::from("test_static_content"));
 }
 
+// Tests the addition, editing, and deletion of a user
 #[test]
 fn add_user() {
     let config = setup(String::from("test_add_user"));
@@ -156,8 +150,8 @@ fn add_user() {
 
     use crate::schema::users::dsl::*;
     let pass = String::from("thisisapassword");
-    let psalt = gen_salt();
-    let phash = hash_password(pass, &psalt);
+
+    let (phash, psalt) = hash_password(pass);
 
     let nu = NewUser {
         real_name: String::from("John Doe"),
@@ -191,9 +185,72 @@ fn add_user() {
             })
             .execute(&conn)
             .expect("Failed to insert new relation into database");
+
+        // Relation deletion
+        delete(relation_group_user.filter(user_id.eq(user.id)))
+            .execute(&conn)
+            .expect("Failed to insert new relation into database");
     }
 
     assert_eq!("JD1".to_string(), user.handle);
+    // User update: create new instance with updated values and enter into db
+    // or edit values directly somehow?
+
+    // User deletion
+    delete(users.find(user.id))
+        .execute(&conn)
+        .expect("Failed to delete user from database");
 
     cleanup(String::from("test_add_user"));
+}
+
+// Tests the addition, editing, and deletion of a group
+#[test]
+fn add_group() {
+    let config = setup(String::from("test_add_group"));
+
+    let _client = Client::new(rocket(config)).unwrap();
+    let conn_url = create_connection_url(&_client);
+
+    let conn = SqliteConnection::establish(conn_url.as_str())
+        .expect("Failed to connect to database in AddGroupTest");
+    embedded_migrations::run(&conn).expect("Failed to run embedded migrations");
+    use crate::schema::groups::dsl::*;
+    let nu = NewGroup {
+        name: String::from("Test Group"),
+        owner_id: 0,
+        location: Some(String::from("DCC 318")),
+    };
+    insert_into(groups)
+        .values(&nu)
+        .execute(&conn)
+        .expect("Failed to add group to database");
+
+    let group: Group = groups
+        .first(&conn)
+        .expect("Failed to get group from database");
+    {
+        use crate::schema::relation_group_user::dsl::*;
+        insert_into(relation_group_user)
+            .values(&NewRelationGroupUser {
+                group_id: group.id,
+                user_id: 0,
+            })
+            .execute(&conn)
+            .expect("Failed to insert new relation into database");
+
+        // Relation deletion
+        delete(relation_group_user.filter(group_id.eq(group.id)))
+            .execute(&conn)
+            .expect("Failed to insert new relation into database");
+    }
+    // Update to group name and meeting location
+
+    // Group deletion
+    delete(groups.find(group.id))
+        .execute(&conn)
+        .expect("Failed to delete group from database");
+
+    // Cleanup database
+    cleanup(String::from("test_add_group"));
 }

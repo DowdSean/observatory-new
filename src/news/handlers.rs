@@ -1,15 +1,14 @@
-use std::io::Cursor;
-
 use diesel::prelude::*;
 use diesel::{delete, insert_into, update};
-use rocket::http::{ContentType, Status};
 use rocket::request::Form;
-use rocket::response::{Redirect, Response};
+use rocket::response::Redirect;
 
+use rocket::http::ContentType;
+use rocket::response::Content;
 use rocket_contrib::json::Json;
 
 use crate::guards::*;
-use crate::templates::FormError;
+use crate::templates::{is_reserved, FormError};
 use crate::ObservDbConn;
 
 use super::models::*;
@@ -38,7 +37,7 @@ pub fn news_json(conn: ObservDbConn, _l: MaybeLoggedIn) -> Json<Vec<NewsStory>> 
 }
 
 #[get("/news.xml")]
-pub fn news_rss(conn: ObservDbConn) -> Response<'static> {
+pub fn news_rss(conn: ObservDbConn) -> Content<String> {
     use crate::schema::news::dsl::*;
     use rss;
 
@@ -73,11 +72,8 @@ pub fn news_rss(conn: ObservDbConn) -> Response<'static> {
         .expect("Failed to build RSS Channel")
         .to_string();
 
-    Response::build()
-        .status(Status::Ok)
-        .header(ContentType::XML)
-        .sized_body(Cursor::new(xml))
-        .finalize()
+    // RSS feeds have their own special mimetype
+    Content(ContentType::new("application", "rss+xml"), xml)
 }
 
 #[get("/news/<nid>")]
@@ -108,9 +104,12 @@ pub fn story_new_post(
 ) -> Redirect {
     use crate::schema::news::dsl::*;
 
-    let newnewsstory = newnewsstory.into_inner();
-    if newnewsstory.check_times().is_err() {
+    let mut newnewsstory = newnewsstory.into_inner();
+    if newnewsstory.fix_times().is_none() {
         return Redirect::to(format!("/news/new?e={}", FormError::InvalidDate));
+    }
+    if let Err(e) = is_reserved(&newnewsstory.title) {
+        return Redirect::to(format!("/news/new?e={}", e));
     }
 
     insert_into(news)
@@ -148,9 +147,12 @@ pub fn story_edit_put(
 ) -> Redirect {
     use crate::schema::news::dsl::*;
 
-    let editnewsstory = editnewsstory.into_inner();
-    if editnewsstory.check_times().is_err() {
+    let mut editnewsstory = editnewsstory.into_inner();
+    if editnewsstory.fix_times().is_none() {
         return Redirect::to(format!("/news/{}/edit?e={}", nid, FormError::InvalidDate));
+    }
+    if let Err(e) = is_reserved(&editnewsstory.title) {
+        return Redirect::to(format!("/news/{}/edit?e={}", nid, e));
     }
 
     update(news.find(nid))

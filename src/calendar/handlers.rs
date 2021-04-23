@@ -6,6 +6,8 @@ use rocket::http::Status;
 use rocket::request::Form;
 use rocket::response::Redirect;
 
+use rocket::http::ContentType;
+use rocket::response::Content;
 use rocket_contrib::json::Json;
 
 use crate::attend::code::attendance_code;
@@ -13,7 +15,7 @@ use crate::guards::*;
 
 use super::models::*;
 use super::templates::*;
-use crate::templates::FormError;
+use crate::templates::{is_reserved, FormError};
 use crate::ObservDbConn;
 
 /// GET handler for `/calendar`
@@ -48,6 +50,54 @@ pub fn calendar_json(conn: ObservDbConn) -> Json<Vec<Event>> {
     )
 }
 
+/// GET handler for `/calendar.ics`
+///
+/// An ICalendar version of
+#[get("/calendar.ics")]
+pub fn calendar_ics(conn: ObservDbConn) -> Content<String> {
+    use icalendar;
+    use icalendar::Component;
+
+    let mut ical = icalendar::Calendar::new();
+
+    use crate::schema::events::dsl::*;
+    use chrono::offset::{Local, TimeZone, Utc};
+
+    for evt in events
+        .order(start.asc())
+        .load::<Event>(&*conn)
+        .expect("Failed to get events")
+    {
+        ical.push(
+            icalendar::Event::new()
+                .summary(&evt.title)
+                .description(&evt.description.unwrap_or_else(|| String::new()))
+                .class(icalendar::Class::Public)
+                // Ensure that everything converts to UTC and offsets are correct
+                .starts(
+                    Utc.from_utc_datetime(
+                        &Local.from_local_datetime(&evt.start).unwrap().naive_utc(),
+                    ),
+                )
+                .ends(
+                    Utc.from_utc_datetime(
+                        &Local.from_local_datetime(&evt.end).unwrap().naive_utc(),
+                    ),
+                )
+                .append_property(
+                    icalendar::Property::new(
+                        "LOCATION",
+                        &evt.location.unwrap_or_else(|| String::new()),
+                    )
+                    .done(),
+                )
+                .done(),
+        );
+    }
+
+    Content(ContentType::Calendar, ical.to_string())
+}
+
 /// GET handler for `/calendar/<eid>`
 ///
 /// A single calendar event's page with information on the event.
@@ -55,13 +105,16 @@ pub fn calendar_json(conn: ObservDbConn) -> Json<Vec<Event>> {
 pub fn event(conn: ObservDbConn, l: MaybeLoggedIn, eid: i32) -> Option<EventTemplate> {
     use crate::schema::events::dsl::*;
 
+    let evt = events
+        .find(eid)
+        .first(&*conn)
+        .optional()
+        .expect("Failed to get event")?;
+
     Some(EventTemplate {
         logged_in: l.user(),
-        event: events
-            .find(eid)
-            .first(&*conn)
-            .optional()
-            .expect("Failed to get event")?,
+        users: event_users(&*conn, &evt),
+        event: evt,
     })
 }
 
@@ -128,12 +181,15 @@ pub fn event_edit_put(
 
     use crate::schema::events::dsl::*;
     let mut editevent = editevent.into_inner();
-    if editevent.check_times().is_err() {
+    if editevent.fix_times().is_none() {
         return Ok(Redirect::to(format!(
             "/calendar/{}/edit?e={}",
             eid,
             FormError::InvalidDate
         )));
+    }
+    if let Err(e) = is_reserved(&editevent.title) {
+        return Ok(Redirect::to(format!("/calendar/{}/edit?e={}", eid, e)));
     }
     let (atcode, host_id): (String, i32) = events
         .find(eid)
@@ -161,6 +217,15 @@ pub fn event_edit_put(
 /// Restricted to Admins.
 #[delete("/calendar/<eid>")]
 pub fn event_delete(conn: ObservDbConn, _l: AdminGuard, eid: i32) -> Redirect {
+    // Delete the attendances relations
+    {
+        use crate::schema::attendances::dsl::*;
+        delete(attendances.filter(is_event.eq(true).and(event_id.eq(eid))))
+            .execute(&*conn)
+            .expect("Failed to delete attendances from database");
+    }
+
+    // Delete the event
     use crate::schema::events::dsl::*;
     delete(events.find(eid))
         .execute(&*conn)
@@ -199,15 +264,42 @@ pub fn event_new_post(
     use crate::schema::events::dsl::*;
 
     let mut newevent = newevent.into_inner();
-    if newevent.check_times().is_err() {
+    if newevent.fix_times().is_none() {
         return Redirect::to(format!("/calendar/new?e={}", FormError::InvalidDate));
     }
+    if let Err(e) = is_reserved(&newevent.title) {
+        return Redirect::to(format!("/calendar/new?e={}", e));
+    }
     newevent.code = attendance_code(&*conn);
+
+    audit_log!(
+        "User {} [{}] has generated an attendance code for Event \'{}\'",
+        _admin.0.id,
+        _admin.0.email,
+        newevent.title
+    );
 
     insert_into(events)
         .values(&newevent)
         .execute(&*conn)
-        .expect("Failed to add user to database");
+        .expect("Failed to add event to database");
 
     Redirect::to("/calendar")
+}
+
+use crate::models::{Attendance, User};
+/// Returns a list of users who attended a given event
+fn event_users(conn: &SqliteConnection, event: &Event) -> Vec<User> {
+    Attendance::belonging_to(event)
+        .load::<Attendance>(conn)
+        .expect("Failed to get relations from database")
+        .iter()
+        .map(|r| {
+            use crate::schema::users::dsl::*;
+            users
+                .find(r.user_id)
+                .first(conn)
+                .expect("Failed to get user from database")
+        })
+        .collect()
 }

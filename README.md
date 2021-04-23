@@ -1,5 +1,6 @@
 # Observatory-new
-[![CircleCI](https://circleci.com/gh/rcos/observatory-new.svg?style=svg)](https://circleci.com/gh/rcos/observatory-new)
+
+[![Build Status Badge](https://github.com/rcos/observatory-new/workflows/Build/badge.svg)](https://github.com/rcos/observatory-new/actions?query=workflow%3ABuild)
 
 <img src="./logo.svg" alt="RCOS Observatory logo" width="200px" style="display:block;margin:auto;"/>
 
@@ -16,6 +17,7 @@ as the database backend.
 If you would like to help out please read [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Major Dependencies
+
 - [Diesel](https://diesel.rs): Database ORM
 - [Rocket](https://rocket.rs): Web framework
 - [Askama](https://github.com/djc/askama): Templating engine
@@ -23,6 +25,7 @@ If you would like to help out please read [CONTRIBUTING.md](./CONTRIBUTING.md).
 - [Bootstrap](https://getbootstrap.com): CSS framework
 
 ## Building
+
 Before anything else make sure that you have the development tools for your
 system. On Ubuntu/Debian you can install these with:
 
@@ -51,21 +54,32 @@ After that it's as simple as
 $ cargo build
 ```
 
-And to run do
+And to run the project do
 ```
 $ cargo run
 ```
 
-## Deploying
-
-**This is for deploying to a server, not a developer machine**
-
-Please read [the Deploying instructions](./DEPLOYING.md) for information on how to setup
-and deploy observatory-new.
+then open your browser to `http://localhost:8000`
 
 ## Documentation
+
+Documentation for the project as a whole can be found within the
+[docs folder](./docs) and contains a variety of useful information.
+
 The code is primarily documented using in-code doc comments.
 This can be viewed either by browsing the source or in a web browser with.
 ```
 $ cargo doc --no-deps --document-private-items --all-features --open
 ```
+
+## Acknowledgements and License
+
+A big shoutout to the RCOS community as well as the professors who guided us!
+
+Source Code in this repository is subject to the terms of the
+[MIT license](https://choosealicense.com/licenses/mit/)
+provided in the [LICENSE file](./LICENSE) unless otherwise specified.
+
+Images and other artistic assets in this repository are under the terms of the
+[CC-BY-4.0](https://choosealicense.com/licenses/cc-by-4.0/)
+license provided in the [COPYING](./COPYING) unless otherwise specified.

@@ -57,10 +57,17 @@ pub struct DashboardTemplate {
     pub summary: GradeSummary,
 }
 
+#[derive(Template)]
+#[template(path = "log-viewer.html")]
+pub struct LogViewerTemplate {
+    pub logged_in: OptUser,
+    pub log_files: Vec<String>,
+    pub file_text: Option<String>,
+}
+
 /// Site Map template
 ///
 /// HTML File: `sitemap.html`
-
 #[derive(Template)]
 #[template(path = "sitemap.html")]
 pub struct SitemapTemplate {}
@@ -121,8 +128,14 @@ pub enum FormError {
     MmostExists,
     /// An attendance code does not exist or is used by a non-affiliated member
     InvalidCode,
+    /// An valid attendance code does was already used by a user
+    UsedCode,
     /// A date field was the wrong format invalid
     InvalidDate,
+    /// You used a name that is reserved and can't be used
+    ReservedName,
+    /// Project name already taken
+    TakenName,
     /// Some other unknown error
     Other,
 }
@@ -144,7 +157,10 @@ impl fmt::Display for FormError {
                 FormError::GitExists => "gitExists",
                 FormError::MmostExists => "mmostExists",
                 FormError::InvalidCode => "code",
+                FormError::UsedCode => "usedCode",
                 FormError::InvalidDate => "date",
+                FormError::ReservedName => "reserved",
+                FormError::TakenName => "taken",
                 FormError::Other => "other",
             }
         )
@@ -163,7 +179,10 @@ impl<T: AsRef<str>> From<T> for FormError {
             "gitExists" => FormError::GitExists,
             "mmostExists" => FormError::MmostExists,
             "code" => FormError::InvalidCode,
+            "usedCode" => FormError::UsedCode,
             "date" => FormError::InvalidDate,
+            "reserved" => FormError::ReservedName,
+            "taken" => FormError::TakenName,
             "other" => FormError::Other,
             _ => FormError::Other,
         }
@@ -179,5 +198,15 @@ impl<'v> FromFormValue<'v> for FormError {
 
     fn from_form_value(form_value: &'v RawStr) -> Result<FormError, &'v RawStr> {
         Ok(FormError::from(form_value))
+    }
+}
+
+pub const RESERVED_WORDS: &[&str] = &["new", "start", "rcos", "edit"];
+
+pub fn is_reserved(word: &str) -> Result<&str, FormError> {
+    if RESERVED_WORDS.contains(&&*word.to_lowercase()) || word.parse::<usize>().is_ok() {
+        Err(FormError::ReservedName)
+    } else {
+        Ok(word)
     }
 }

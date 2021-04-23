@@ -1,6 +1,8 @@
 use super::models::*;
 #[allow(unused_imports)]
-use crate::templates::{filters, OptUser};
+use crate::templates::filters;
+use crate::templates::{FormError, OptUser};
+use std::collections::HashMap;
 
 use crate::models::User;
 
@@ -17,6 +19,7 @@ pub struct ProjectTemplate {
     pub project: Project,
     pub repos: Vec<String>,
     pub users: Vec<User>,
+    pub recent_commits: HashMap<String, Vec<(String, String, String, String)>>,
 }
 
 /// Project page template
@@ -29,6 +32,7 @@ pub struct ProjectTemplate {
 #[template(path = "project/new-project.html")]
 pub struct NewProjectTemplate {
     pub logged_in: OptUser,
+    pub error: Option<FormError>,
 }
 
 /// Project page template
@@ -43,6 +47,7 @@ pub struct EditProjectTemplate {
     pub project: Project,
     pub repos: Vec<String>,
     pub all_users: Vec<User>,
+    pub error: Option<FormError>,
 }
 
 /// List of the Projects
@@ -55,6 +60,8 @@ pub struct EditProjectTemplate {
 pub struct ProjectsListTemplate {
     pub logged_in: OptUser,
     pub projects: Vec<Project>,
+    pub search_term: String,
+    pub inactive: bool,
 }
 
 /// Template shown when a student wants to join a project
